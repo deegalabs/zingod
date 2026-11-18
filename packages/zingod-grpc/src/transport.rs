@@ -192,7 +192,8 @@ impl<S: ChainDataSource, V: PinnedView> GrpcService<S, V> {
 /// `Access-Control-Allow-Origin` and is refused; native and non-browser clients unaffected)
 ///
 /// - `*` origin + `Any` headers (public endpoint; the `Origin` gate does the refusing, not CORS)
-/// - grpc-status / grpc-message exposed (browser reads a gRPC trailer off the body)
+/// - grpc-status / grpc-message exposed (browser reads a gRPC trailer off the body), and the
+///   refusal's retry pushback, so a browser can wait as long as the server asks
 fn cors(enabled: bool) -> tower_http::cors::CorsLayer {
     use tower_http::cors::{Any, CorsLayer};
     if !enabled {
@@ -206,6 +207,7 @@ fn cors(enabled: bool) -> tower_http::cors::CorsLayer {
             http::header::HeaderName::from_static("grpc-status"),
             http::header::HeaderName::from_static("grpc-message"),
             http::header::HeaderName::from_static("grpc-status-details-bin"),
+            http::header::HeaderName::from_static(crate::admission::PUSHBACK_HEADER),
         ])
         .max_age(Duration::from_secs(3600))
 }
@@ -1013,6 +1015,35 @@ mod tests {
 
         cancel.cancel();
         serving.await.expect("the serve task ran");
+    }
+
+    /// gRPC-web on: a refusal's `grpc-retry-pushback-ms` is exposed to the browser, as the
+    /// status headers are (a Trailers-Only refusal carries both as HTTP headers)
+    #[tokio::test]
+    async fn grpc_web_exposes_the_refusal_retry_pushback() {
+        use tower::{Layer as _, ServiceExt as _};
+        let refuse = tower::service_fn(|_: http::Request<()>| async {
+            Ok::<_, std::convert::Infallible>(crate::admission::refused(
+                crate::admission::Class::Work,
+            ))
+        });
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo")
+            .header("origin", "https://wallet.example")
+            .body(())
+            .expect("request");
+        let response = super::cors(true).layer(refuse).oneshot(request).await.expect("infallible");
+        let exposed = response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert!(
+            exposed.split(',').any(|name| name.trim() == "grpc-retry-pushback-ms"),
+            "pushback readable by a browser, exposed: {exposed:?}",
+        );
     }
 
     /// gRPC-web off (the default): the same preflight gets no CORS grant, so a browser is refused

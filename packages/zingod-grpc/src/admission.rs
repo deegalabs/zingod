@@ -23,7 +23,7 @@ use crate::OverloadLimits;
 const PUSHBACK_MS: &str = "250";
 
 /// gRPC's own "come back later" header (grpc-core)
-const PUSHBACK_HEADER: &str = "grpc-retry-pushback-ms";
+pub(crate) const PUSHBACK_HEADER: &str = "grpc-retry-pushback-ms";
 
 /// Cap a request counts against (each method's in [`Method::route`](crate::service::Method::route),
 /// unknown path = `Work`)
